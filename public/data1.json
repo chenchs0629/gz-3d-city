@@ -1,0 +1,35 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "1001",
+        "height": 50.5,             
+        "function": "commercial",   
+        "name": "国际金融中心"
+      },
+      "geometry": {
+        "type": "Polygon",  
+        "coordinates": [
+          [ 
+            [113.3245, 23.1065],   
+            [113.3248, 23.1065],
+            [113.3248, 23.1068],
+            [113.3245, 23.1068],
+            [113.3245, 23.1065]    
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "1002",
+        "height": 30.0,             
+        "function": "residential",   
+        "name": "幸福小区"
+      }
+    }
+  ]
+}
