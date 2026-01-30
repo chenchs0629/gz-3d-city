@@ -124,7 +124,7 @@ function updateCameraView() {
 renderer.domElement.addEventListener('wheel', (event) => {
     event.preventDefault();
     
-    if (event.deltaY > 0) {
+    if (event.deltaY < 0) {
         // 向前滚动：切换到下一档位（更低视角）
         if (viewConfig.currentLevel < viewLevels.length - 1) {
             viewConfig.currentLevel++;
