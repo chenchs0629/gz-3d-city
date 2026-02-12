@@ -1,0 +1,8 @@
+{
+"type": "FeatureCollection",
+"name": "tile_215_4961",
+"crs": { "type": "name", "properties": { "name": "urn:ogc:def:crs:EPSG::32650" } },
+"features": [
+{ "type": "Feature", "properties": { "Height": 17.452492, "dominant_c": 1, "elevation": 0 }, "geometry": { "type": "Polygon", "coordinates": [ [ [ 107818.172735003638081, 2480503.175278472714126 ], [ 107795.297768431599252, 2480497.891797576099634 ], [ 107794.850390738691203, 2480499.828721339814365 ], [ 107818.172735003638081, 2480503.175278472714126 ] ] ] } }
+]
+}

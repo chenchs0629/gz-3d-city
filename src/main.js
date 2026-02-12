@@ -265,7 +265,9 @@ const tileManager = {
         
         const material = new THREE.MeshLambertMaterial({
             color: this.getColorByType(colorCode),
-            side: THREE.DoubleSide
+            side: THREE.DoubleSide,
+            transparent: true,
+            opacity: 0
         });
         
         const mesh = new THREE.Mesh(geometry, material);
@@ -296,6 +298,13 @@ const tileManager = {
                 
                 mesh.scale.y = Math.max(0.01, eased * mesh.userData.targetHeight);
                 
+                // 同步更新透明度，实现渐显效果
+                mesh.material.opacity = progress;
+                if (progress >= 1) {
+                    mesh.material.transparent = false; // 动画结束后关闭透明混合，优化性能和显示
+                    mesh.material.needsUpdate = true;
+                }
+
                 if (progress < 1) allComplete = false;
             }
             
