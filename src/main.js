@@ -17,8 +17,8 @@ scene.fog = new THREE.FogExp2(0x87ceeb, CONFIG.FOG_DENSITY);
 
 const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 1, 50000);
 // 初始相机位置 - 鸟瞰视角2500m高度
-camera.position.set(250, 2500, 10750);
-camera.lookAt(250, 0, 10750);
+camera.position.set(250, 2500, -10750);
+camera.lookAt(250, 0, -10750);
 
 const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false, logarithmicDepthBuffer: true });
 renderer.setClearColor(0x87ceeb, 1);
@@ -68,9 +68,10 @@ controls.dampingFactor = 0.05;
 controls.screenSpacePanning = false;
 controls.enableZoom = false; // 禁用默认缩放，使用自定义逻辑
 controls.maxPolarAngle = Math.PI / 2.2;
+const INITIAL_VIEW_TARGET = { x: 250, y: 0, z: -10750 };
 // 设置初始目标点
-//controls.target.set(-250, 0, 10750);
-controls.target.set(250, 0, 10750);
+//controls.target.set(-250, 0, -10750);
+controls.target.set(INITIAL_VIEW_TARGET.x, INITIAL_VIEW_TARGET.y, INITIAL_VIEW_TARGET.z);
 controls.update();
 
 // ================== 5.1 自定义滚轮交互 ==================
@@ -119,15 +120,44 @@ function updateCameraView() {
     const horizontalDist = viewConfig.currentHeight * Math.tan(Math.PI / 2 - viewConfig.currentPolarAngle);
     
     // 获取当前相机朝向（水平方向）
+    // Initial camera position is (250, 2500, -10750) and target (250, 0, -10750).
+    // Forward direction is (0, -1, 0) initially? No.
+    // lookAt makes -Z axis of camera point to target.
+    // If pos=(x,y,-z), target=(x,0,-z).
+    // Eye->Target = (0, -2500, 0).
+    // Forward (cam -Z) points global -Y.
+    // So camera is looking STRAIGHT DOWN.
+    // Right (cam +X) is World +X.
+    // Up (cam +Y) is... World -Z (North).
+    
+    // So when we move camera back by `horizontalDist`:
+    // "Back" means along Camera +Z axis (opposite of looking direction).
+    // Camera +Z points World +Y (Up).
+    // Moving "Back" moves Camera UP.
+    // But `horizontalDist` logic here assumes we move in horizontal plane (XZ).
+    
+    // Let's look at `getWorldDirection`.
+    // If looking straight down, direction.x/z are near 0.
     const direction = new THREE.Vector3();
-    camera.getWorldDirection(direction);
-    direction.y = 0;
+    camera.getWorldDirection(direction); // World space forward vector. (0, -1, 0).
+    direction.y = 0; // (0,0,0).
+    
+    // Fallback:
     if (direction.length() < 0.01) {
-        direction.set(0, 0, -1);
+        // If looking perfectly down, we assume "forward" in horizontal plane is North (-Z).
+        direction.set(0, 0, -1); 
     }
     direction.normalize();
     
-    // 更新相机位置
+    // Update Camera Position relative to target
+    // We want camera to be `horizontalDist` away from target, in the opposite direction of `direction` (which is Forward/North).
+    // So Camera should be South of Target.
+    // Target (250, 0, -10750).
+    // Moving South means +Z.
+    // direction = (0, 0, -1) (North).
+    // -direction = (0, 0, 1) (South).
+    // pos = target + (South * dist).
+    
     camera.position.set(
         target.x - direction.x * horizontalDist,
         viewConfig.currentHeight,
@@ -161,21 +191,38 @@ renderer.domElement.addEventListener('wheel', (event) => {
     console.log(`切换到档位 ${viewConfig.currentLevel}: 高度=${level.height}m, 角度=${level.angle}°`);
 }, { passive: false });
 
+function zoomToOverview() {
+    viewConfig.currentLevel = 0;
+    viewConfig.targetHeight = viewLevels[0].height;
+    viewConfig.targetAngle = viewLevels[0].angle * Math.PI / 180;
+    controls.target.set(INITIAL_VIEW_TARGET.x, INITIAL_VIEW_TARGET.y, INITIAL_VIEW_TARGET.z);
+    controls.update();
+    console.log('已切换到全览视角');
+}
+
 // ================== 6. 瓦片管理系统 ==================
 const tileManager = {
     loadedTiles: new Map(),
     currentGrid: { x: null, y: null },
     
+
     getCameraGrid() {
         const target = controls.target;
         return {
             x: Math.floor(target.x / CONFIG.TILE_SIZE),
-            y: Math.floor(target.z / CONFIG.TILE_SIZE)
+            // World Z corresponds to -North.
+            // Tile Y corresponds to +North.
+            // So tileY = -WorldZ / TILE_SIZE.
+            // Example:
+            // Building North = 13000. Tile Y = 26.
+            // World Z = -13000 (Because North is -Z).
+            // tileY = -(-13000) / 500 = 26. Correct.
+            y: Math.floor(-target.z / CONFIG.TILE_SIZE)
         };
     },
     
     getKey(x, y) {
-        return `${x}_${y}`;
+        return `${x}_${y}`; 
     },
     
     getColorByType(code) {
@@ -307,16 +354,46 @@ const tileManager = {
         const shape = new THREE.Shape();
         coords.forEach((pt, i) => {
             const x = pt[0];
-            const y = -pt[1]; 
+            const y = pt[1]; // y 轴不再翻转 (让北向为正Y)
             if (i === 0) shape.moveTo(x, y);
             else shape.lineTo(x, y);
         });
         
         // 使用单位高度1，通过scale.y控制实际高度
         const geometry = new THREE.ExtrudeGeometry(shape, {
-            depth: 1,
+            depth: 1, // 挤出深度为1，对应Z轴
             bevelEnabled: false
         });
+        
+        // 修正旋转方向：
+        // 1. 我们希望 +Y (北) 变成 -Z (屏幕向里/北)。
+        // 2. 我们希望 Extrude方向 (默认+Z) 变成 +Y (屏幕向上/高度)。
+        
+        // 当前状态：Shape在XY平面。y是北。Extrude沿+Z。
+        // Point (x, North, 0) -> Base
+        // Point (x, North, 1) -> Top
+        
+        // 目标状态：
+        // Base: (x, 0, -North)
+        // Top: (x, 1, -North)
+        
+        // 让我们看看 rotateX(Math.PI / 2) 做了什么 (90度):
+        // (x, y, z) -> (x, -z, y)
+        // Base (x, N, 0) -> (x, 0, N) -> this sends North to +Z (South). 错了。
+        
+        // 让我们看看 rotateX(-Math.PI / 2) 做了什么 (-90度):
+        // (x, y, z) -> (x, z, -y)
+        // Base (x, N, 0) -> (x, 0, -N) -> this sends North to -Z (North). 正确！
+        // Top (x, N, 1) -> (x, 1, -N) -> height is along +Y. 正确！
+        
+        // 所以，我们需要保持 rotateX(-Math.PI / 2) 
+        // 但是之前为什么反了呢？
+        // 之前是因为 shape construction 时 y = -pt[1] (South).
+        // Base (x, -N, 0) --(-90)--> (x, 0, -(-N)) = (x, 0, N) -> South.
+        
+        // 结论：
+        // 1. y = pt[1] (这是对的，保持 GIS 坐标)
+        // 2. rotateX(-Math.PI / 2) (这是对的，把 GIS 的 Y(North) 映射到 3D 的 -Z(North)，把 Extrude 的 Z(Height) 映射到 3D 的 Y(Up))
         
         geometry.rotateX(-Math.PI / 2);
         
@@ -351,7 +428,7 @@ const tileManager = {
             const shape = new THREE.Shape();
             outerRing.forEach((pt, i) => {
                 const x = pt[0];
-                const y = -pt[1]; // y 轴翻转，和建筑一致
+                const y = pt[1]; // y 轴不再翻转
                 if (i === 0) shape.moveTo(x, y);
                 else shape.lineTo(x, y);
             });
@@ -363,7 +440,7 @@ const tileManager = {
                     const holePath = new THREE.Path();
                     holeRing.forEach((pt, j) => {
                         const x = pt[0];
-                        const y = -pt[1];
+                        const y = pt[1];
                         if (j === 0) holePath.moveTo(x, y);
                         else holePath.lineTo(x, y);
                     });
@@ -395,6 +472,7 @@ const tileManager = {
 
         return null;
     },
+
 
     // 更新建筑生长和道路淡入动画
     updateBuildingAnimations() {
@@ -596,15 +674,27 @@ const mapManager = {
     },
 
     tileToMercator(tx, ty, zoom) {
-        const originX = -this.config.S;
-        const originY = this.config.S;
-        const S_S_2 = this.config.S * 2;
+        // Standard Web Mercator Tiling Scheme (Google / OSM / ArcGIS)
+        // Origin is Top-Left (-S, S).
+        // X increases Right.
+        // Y increases Down (in tile coordinates).
+        // Y increases Up (in Mercator coordinates).
+        
+        const S = this.config.S;
+        const originX = -S;
+        const originY = S;
+        const S_S_2 = S * 2;
         const tileSize = S_S_2 / Math.pow(2, zoom);
         
         const minX = originX + tx * tileSize;
+        // Tile Y=0 is at Top (Mercator Y=S).
+        // Tile Y=1 starts at Mercator Y = S - tileSize.
+        // Tile ty starts at Mercator Y = S - ty * tileSize (This is maxY).
+        // Tile ty ends at Mercator Y = S - (ty + 1) * tileSize (This is minY).
+        
         const maxY = originY - ty * tileSize;
-        const maxX = originX + (tx + 1) * tileSize;
         const minY = originY - (ty + 1) * tileSize;
+        const maxX = originX + (tx + 1) * tileSize;
         
         return { minX, minY, maxX, maxY };
     },
@@ -612,21 +702,47 @@ const mapManager = {
     update(target) {
         // 计算目标点对应的EPSG:3857坐标
         const mercX = target.x + this.config.centerX;
-        const mercY = target.z + this.config.centerY;  // 修正对齐Bug: 正确对应的Z轴变化
+        
+        // Z axis is inverted: -Z is North (increasing Mercator Y)
+        const mercY = -target.z + this.config.centerY;  
         
         const centerTile = this.mercatorToTile(mercX, mercY, this.config.zoom);
         
-        if (this.currentGrid.x === centerTile.x && this.currentGrid.y === centerTile.y) return;
+        // Optimization: Only update if center tile changes significantly? No, always check radius.
+        // But we have currentGrid check to avoid re-calculating everything every frame if stationary.
+        if (Math.abs(this.currentGrid.x - centerTile.x) < 1 && Math.abs(this.currentGrid.y - centerTile.y) < 1) {
+             // We can skip heavy lifting, but let's just use strict equality for now as before
+             if (this.currentGrid.x === centerTile.x && this.currentGrid.y === centerTile.y) return;
+        }
         this.currentGrid = { ...centerTile };
         
         const neededTiles = new Set();
-        for (let dx = -this.config.radius; dx <= this.config.radius; dx++) {
-            for (let dy = -this.config.radius; dy <= this.config.radius; dy++) {
+        // Load radius for map tiles
+        const loadRadius = this.config.radius;
+        
+        for (let dx = -loadRadius; dx <= loadRadius; dx++) {
+            for (let dy = -loadRadius; dy <= loadRadius; dy++) {
                 const tx = centerTile.x + dx;
                 const ty = centerTile.y + dy;
+                // For Slippy Map tiles, Y increases South.
+                // So (centerTile.y - dy) would mean moving North if dy>0? 
+                // Wait, centerTile.y is current pixel Y (Slippy Y).
+                // Moving North means decreasing Y.
+                // Moving South means increasing Y.
+                // Loop dx, dy around current index.
+                // ty can be positive or negative? Standard Slippy Map Y is 0 to 2^zoom - 1.
+                // If we are at zoom 16.
+                // Guangzhou latitude ~23 N.
+                // Mercator Y > 0.
+                // pixel_y = (originY - mercY) ... -> 0 < pixel_y < Total.
+                // So ty should be positive.
+                
                 neededTiles.add(`${this.config.zoom}_${tx}_${ty}`);
             }
         }
+        
+        // ... (rest of function)
+
         
         // 卸载离开范围的瓦片
         for (const [key, meshObj] of this.loadedTiles.entries()) {
@@ -678,22 +794,43 @@ const mapManager = {
                 
                 texture.colorSpace = THREE.SRGBColorSpace;
                 // 去除贴图上的接缝
+                texture.magFilter = THREE.LinearFilter;
                 texture.minFilter = THREE.LinearFilter;
-                // 修正对齐Bug: 修复WebGL默认Y轴翻转带来的南北底图颠倒问题
-                texture.flipY = false; 
+                texture.wrapS = THREE.ClampToEdgeWrapping;
+                texture.wrapT = THREE.ClampToEdgeWrapping;
                 
+                // 修正对齐Bug: 修复WebGL默认Y轴翻转带来的南北底图颠倒问题
+                // Default is flipY=true. With true:
+                // Image Top (North) -> Texture V=1 (Top).
+                // Geom Top (V=1) -> Global North.
+                // So North -> North.
+                texture.flipY = true;
+
                 const bounds = this.tileToMercator(tx, ty, zoom);
                 
-                // 修正对齐Bug: 将墨卡托投影坐标重新转化为局部的ThreeJS系统坐标，Z轴不能颠倒
+                // 修正对齐Bug: 将墨卡托投影坐标重新转化为局部的ThreeJS系统坐标
+                
                 const localMinX = bounds.minX - this.config.centerX;
                 const localMaxX = bounds.maxX - this.config.centerX;
-                const localMinZ = bounds.minY - this.config.centerY; 
-                const localMaxZ = bounds.maxY - this.config.centerY;
+                
+                // Z轴不需要反转，但是方向要是对的 (-Z is North)
+                // Mercator Y Axis: Up is North.
+                // 3D Z Axis: -Z is North.
+                // So Z = -Y.
+                
+                const localMinZ = -(bounds.maxY - this.config.centerY); // Top/North -> smaller Z
+                const localMaxZ = -(bounds.minY - this.config.centerY); // Bottom/South -> larger Z
                 
                 const width = localMaxX - localMinX;
-                const height = localMaxZ - localMinZ;
+                const height = localMaxZ - localMinZ; // Positive
                 
                 const geometry = new THREE.PlaneGeometry(width, height);
+                // Rotate -90 degrees around X.
+                // (x, y, z) -> (x, z, -y)
+                // Default Plane: Y is Up locally.
+                // We want mapped Y (North) to point to World -Z.
+                // So (x, N, 0) -> (x, 0, -N).
+                
                 geometry.rotateX(-Math.PI / 2);
                 
                 // MeshLambertMaterial 可以响应光照
@@ -701,11 +838,16 @@ const mapManager = {
                     map: texture,
                     polygonOffset: true,
                     polygonOffsetFactor: 1, // 控制处于更下面的灰底(2)和更上面的道路(-1)之间
-                    polygonOffsetUnits: 1
+                    polygonOffsetUnits: 1,
+                    side: THREE.FrontSide
                 });
                 
+                // Position should be center
+                const centerX = localMinX + width / 2;
+                const centerZ = localMinZ + height / 2;
+
                 const mesh = new THREE.Mesh(geometry, material);
-                mesh.position.set(localMinX + width / 2, -0.4, localMinZ + height / 2);
+                mesh.position.set(centerX, -0.4, centerZ);
                 mesh.renderOrder = 0; 
                 
                 this.group.add(mesh);
@@ -738,6 +880,24 @@ infoDiv.style.cssText = `
     z-index: 1000;
 `;
 document.body.appendChild(infoDiv);
+
+const overviewButton = document.createElement('button');
+overviewButton.textContent = '全览';
+overviewButton.style.cssText = `
+    position: fixed;
+    top: 10px;
+    right: 10px;
+    background: rgba(20,20,20,0.8);
+    color: #fff;
+    border: 1px solid rgba(255,255,255,0.2);
+    padding: 8px 14px;
+    font-size: 12px;
+    border-radius: 6px;
+    cursor: pointer;
+    z-index: 1001;
+`;
+overviewButton.addEventListener('click', zoomToOverview);
+document.body.appendChild(overviewButton);
 
 function updateInfo() {
     const grid = tileManager.getCameraGrid();
