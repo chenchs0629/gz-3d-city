@@ -24,20 +24,48 @@ const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false, logari
 renderer.setClearColor(0x87ceeb, 1);
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.setPixelRatio(window.devicePixelRatio);
+renderer.shadowMap.enabled = true; // 开启阴影
+renderer.shadowMap.type = THREE.PCFSoftShadowMap; // 使用柔和阴影
 document.body.appendChild(renderer.domElement);
 
 // ================== 3. 灯光设置 ==================
-const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
-scene.add(ambientLight);
+// 使用半球光代替环境光，模拟天空对地面的散射，使阴影部分呈现自然的冷色调
+const hemisphereLight = new THREE.HemisphereLight(0xddeeff, 0x333333, 0.5);
+hemisphereLight.position.set(0, 500, 0);
+scene.add(hemisphereLight);
 
-const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
-dirLight.position.set(500, 1000, 500);
+// 主光源 - 模拟太阳
+// 暖色调太阳光 (0xffefe0)，位置调整为侧射光以拉长阴影，增强立体感
+const dirLight = new THREE.DirectionalLight(0xffefe0, 1.2);
+
+// 设置光源目标点为初始视图中心，确保阴影覆盖初始区域
+const targetObject = new THREE.Object3D();
+targetObject.position.set(250, 0, -10750);
+scene.add(targetObject);
+dirLight.target = targetObject;
+
+// 光源位置相对于目标点 (从西南方向照射)
+dirLight.position.set(250 - 1500, 2000, -10750 + 1500); 
+dirLight.castShadow = true;
+
+// 配置阴影参数 - 扩大阴影范围以覆盖更多城市区域
+dirLight.shadow.mapSize.width = 4096;  // 提高分辨率
+dirLight.shadow.mapSize.height = 4096;
+const d = 4000; // 扩大阴影相机范围
+dirLight.shadow.camera.left = -d;
+dirLight.shadow.camera.right = d;
+dirLight.shadow.camera.top = d;
+dirLight.shadow.camera.bottom = -d;
+dirLight.shadow.camera.near = 100;
+dirLight.shadow.camera.far = 10000;
+dirLight.shadow.bias = -0.0005; // 稍微增加偏移量以消除摩尔纹
+dirLight.shadow.normalBias = 0.05; // 新增：利用法线偏移有效解决自阴影三角形伪影(Shadow Acne)
+dirLight.shadow.radius = 2; // 增加软阴影半径
+
 scene.add(dirLight);
 
-// 补光
-const fillLight = new THREE.DirectionalLight(0x88aaff, 0.3);
-fillLight.position.set(-500, 500, -500);
-scene.add(fillLight);
+// 移除补光，让阴影更纯粹
+// const fillLight = new THREE.DirectionalLight(0x88aaff, 0.3); ...
 
 // 全览模式的聚光灯（实现圆形高亮）
 const spotLight = new THREE.SpotLight(0xffffff, 0); // 初始强度为0
@@ -70,6 +98,7 @@ const plane = new THREE.Mesh(planeGeometry, planeMaterial);
 plane.rotation.x = -Math.PI / 2;
 plane.position.y = -0.5;
 plane.renderOrder = 0; // 地面最先渲染
+plane.receiveShadow = true; // 接收阴影
 scene.add(plane);
 
 // ================== 5. 控制器 ==================
@@ -227,7 +256,7 @@ function enterMacroMode() {
     // 保存原有的环境设置
     savedEnv.fog = scene.fog;
     savedEnv.background = scene.background;
-    savedEnv.ambientIntensity = ambientLight.intensity;
+    savedEnv.ambientIntensity = hemisphereLight.intensity; // 使用 hemisphereLight
     savedEnv.dirIntensity = dirLight.intensity;
     
     // 移除雾气，设置深邃背景
@@ -235,9 +264,9 @@ function enterMacroMode() {
     scene.background = new THREE.Color(0x050510); 
     
     // 调暗环境光，开启聚光灯
-    ambientLight.intensity = 0.1;
+    hemisphereLight.intensity = 0.1;
     dirLight.intensity = 0.1;
-    fillLight.intensity = 0;
+    // fillLight.intensity = 0; // fillLight removed
     if (spotLight) {
         spotLight.intensity = 12.5; // 进一步提高亮度 (原 2.5 -> 15 -> 30)
         spotLight.color.setHex(0xc5e6fc); // 更明显的暖黄色 (原纯白 -> c5e6fc -> ffe0a0)
@@ -277,9 +306,9 @@ function exitMacroMode() {
          else scene.background = new THREE.Color(0x87ceeb);
     }, 300);
 
-    ambientLight.intensity = savedEnv.ambientIntensity;
+    hemisphereLight.intensity = savedEnv.ambientIntensity;
     dirLight.intensity = savedEnv.dirIntensity;
-    fillLight.intensity = 0.3; 
+    // fillLight.intensity = 0.3;  // fillLight removed 
     if (spotLight) {
         spotLight.intensity = 0; // 关闭聚光灯
         spotLight.color.setHex(0xffffff); // 恢复白色
@@ -505,6 +534,8 @@ const tileManager = {
         });
         
         const mesh = new THREE.Mesh(geometry, material);
+        mesh.castShadow = true;
+        mesh.receiveShadow = true;
         return { mesh, targetHeight: height };
     },
 
@@ -553,6 +584,7 @@ const tileManager = {
             const mesh = new THREE.Mesh(geometry, material);
             mesh.position.y = 0.1;
             mesh.renderOrder = 1; // 道路在地面之后渲染，确保层级正确
+            mesh.receiveShadow = true;
             return mesh;
         };
 
@@ -1079,6 +1111,7 @@ const mapManager = {
                 const mesh = new THREE.Mesh(geometry, material);
                 mesh.position.set(centerX, -0.4, centerZ);
                 mesh.renderOrder = 0; 
+                mesh.receiveShadow = true;
                 
                 this.group.add(mesh);
                 tileObj.mesh = mesh;
@@ -1143,6 +1176,17 @@ function animate() {
         spotLight.position.copy(camera.position);
         spotLight.target.position.copy(controls.target);
         spotLight.target.updateMatrixWorld();
+    } else {
+        // 微观模式下，让太阳光跟随相机目标移动，保证阴影始终覆盖视野中心
+        // 保持光源相对于目标的偏移量不变
+        const sunOffset = { x: -1500, y: 2000, z: 1500 }; 
+        dirLight.position.set(
+            controls.target.x + sunOffset.x, 
+            controls.target.y + sunOffset.y, 
+            controls.target.z + sunOffset.z
+        );
+        dirLight.target.position.copy(controls.target);
+        dirLight.target.updateMatrixWorld();
     }
     updateCameraView();  // 平滑相机过渡
     tileManager.update();
