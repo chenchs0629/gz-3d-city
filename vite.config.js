@@ -16,9 +16,9 @@ export default defineConfig({
     chunkSizeWarningLimit: 2000
   },
   
-  // 开发服务器配置
   server: {
     port: 5173,
-    open: true
+    open: true,
+    host: '0.0.0.0' // 允许局域网访问
   }
 })

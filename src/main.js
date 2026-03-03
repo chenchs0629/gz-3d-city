@@ -39,6 +39,17 @@ const fillLight = new THREE.DirectionalLight(0x88aaff, 0.3);
 fillLight.position.set(-500, 500, -500);
 scene.add(fillLight);
 
+// 全览模式的聚光灯（实现圆形高亮）
+const spotLight = new THREE.SpotLight(0xffffff, 0); // 初始强度为0
+spotLight.angle = Math.PI / 8;
+spotLight.penumbra = 0.3;
+spotLight.decay = 0; // 无衰减，保证均匀
+spotLight.distance = 10000;
+spotLight.castShadow = false;
+spotLight.position.set(0, 8000, 0);
+scene.add(spotLight);
+scene.add(spotLight.target);
+
 // ================== 4. 天空盒与地面 ==================
 const textureLoader = new THREE.TextureLoader();
 textureLoader.load('/skybox/DaySkyHDRI027B_4K_TONEMAPPED.jpg', (texture) => {
@@ -77,13 +88,13 @@ controls.update();
 // ================== 5.1 自定义滚轮交互 ==================
 // 定义6个视角档位：从鸟瞰到街景
 const viewLevels = [
-    { height: 2500, angle: 90 },  // 档位0: 鸟瞰 (可看约40个瓦片)
-    { height: 1800, angle: 75 },  // 档位1: 高空俯视
-    { height: 1200, angle: 60 },  // 档位2: 中高空
-    { height: 700,  angle: 50 },  // 档位3: 中空
-    { height: 400,  angle: 40 },  // 档位4: 低空
+    { height: 2500, angle: 80 },  // 档位0: 鸟瞰 (可看约40个瓦片)
+    { height: 1800, angle: 68 },  // 档位1: 高空俯视
+    { height: 1200, angle: 55 },  // 档位2: 中高空
+    { height: 700,  angle: 45 },  // 档位3: 中空
+    { height: 400,  angle: 35 },  // 档位4: 低空
     { height: 200,  angle: 25 },  // 档位5: 街景视角 (最低)
-    { height: 100,  angle: 15 },  // 档位6: 视角最低
+    { height: 100,  angle: 18 },  // 档位6: 视角最低
 ];
 
 const viewConfig = {
@@ -96,6 +107,7 @@ const viewConfig = {
     // 过渡动画参数
     transitionSpeed: 0.08,        // 过渡速度 (0-1)
     isTransitioning: false,
+    isMacro: false // 新增：是否处于宏观视角
 };
 
 // 平滑更新相机位置和角度
@@ -171,15 +183,27 @@ function updateCameraView() {
 renderer.domElement.addEventListener('wheel', (event) => {
     event.preventDefault();
     
+    // 宏观视角逻辑
+    if (viewConfig.isMacro) {
+        if (event.deltaY < 0) { // 向前滚动 (Zoom In)
+           exitMacroMode();
+        }
+        return;
+    }
+
     if (event.deltaY < 0) {
         // 向前滚动：切换到下一档位（更低视角）
         if (viewConfig.currentLevel < viewLevels.length - 1) {
             viewConfig.currentLevel++;
         }
     } else {
-        // 向后滚动：切换到上一档位（更高视角）
+        // 向后滚动 (Zoom Out)
         if (viewConfig.currentLevel > 0) {
             viewConfig.currentLevel--;
+        } else {
+            // 在最高档位继续向后滚动 -> 进入宏观模式
+            enterMacroMode();
+            return;
         }
     }
     
@@ -191,13 +215,89 @@ renderer.domElement.addEventListener('wheel', (event) => {
     console.log(`切换到档位 ${viewConfig.currentLevel}: 高度=${level.height}m, 角度=${level.angle}°`);
 }, { passive: false });
 
-function zoomToOverview() {
+// 存储环境状态用于恢复
+const savedEnv = { fog: null, background: null, ambientIntensity: 0.6, dirIntensity: 0.8 };
+
+function enterMacroMode() {
+    if (viewConfig.isMacro) return;
+    
+    console.log('进入全览宏观视角');
+    viewConfig.isMacro = true;
+    
+    // 保存原有的环境设置
+    savedEnv.fog = scene.fog;
+    savedEnv.background = scene.background;
+    savedEnv.ambientIntensity = ambientLight.intensity;
+    savedEnv.dirIntensity = dirLight.intensity;
+    
+    // 移除雾气，设置深邃背景
+    scene.fog = null;
+    scene.background = new THREE.Color(0x050510); 
+    
+    // 调暗环境光，开启聚光灯
+    ambientLight.intensity = 0.1;
+    dirLight.intensity = 0.1;
+    fillLight.intensity = 0;
+    if (spotLight) {
+        spotLight.intensity = 12.5; // 进一步提高亮度 (原 2.5 -> 15 -> 30)
+        spotLight.color.setHex(0xc5e6fc); // 更明显的暖黄色 (原纯白 -> c5e6fc -> ffe0a0)
+        // 显著增加照射范围, 覆盖更多区域
+        spotLight.angle = Math.PI / 4; 
+    }
+    
+    // 目标高度设为更高 (9000m)
+    // 确保视角为90度(或接近)以获得正交俯视感
+    viewConfig.targetHeight = 8000;
+    viewConfig.targetAngle = 90 * Math.PI / 180; 
+    
+    // 加载并显示点云
+    if (typeof macroPointsManager !== 'undefined') {
+        macroPointsManager.load().then(() => {
+            macroPointsManager.show();
+        }).catch(err => console.error(err));
+    }
+    
+    // 不需要扩大底图加载范围，因为全览模式下我们隐藏了底图图片
+    // mapManager.config.radius = 8;
+    // mapManager.update(controls.target);
+}
+
+function exitMacroMode() {
+    if (!viewConfig.isMacro) return;
+    
+    console.log('正在退出全览，进入微观视角...');
+    viewConfig.isMacro = false;
+    
+    // 恢复环境设置
+    scene.fog = savedEnv.fog;
+    
+    // 延迟恢复背景颜色，避免闪烁
+    setTimeout(() => {
+         if(savedEnv.background) scene.background = savedEnv.background;
+         else scene.background = new THREE.Color(0x87ceeb);
+    }, 300);
+
+    ambientLight.intensity = savedEnv.ambientIntensity;
+    dirLight.intensity = savedEnv.dirIntensity;
+    fillLight.intensity = 0.3; 
+    if (spotLight) {
+        spotLight.intensity = 0; // 关闭聚光灯
+        spotLight.color.setHex(0xffffff); // 恢复白色
+        spotLight.angle = Math.PI / 6; // 恢复角度
+    }
+    
+    // mapManager.config.radius = 4;
+
+    // 隐藏点云，恢复瓦片
+    if (typeof macroPointsManager !== 'undefined') {
+        macroPointsManager.hide();
+    }
+    
+    // 恢复到 Level 0
     viewConfig.currentLevel = 0;
-    viewConfig.targetHeight = viewLevels[0].height;
-    viewConfig.targetAngle = viewLevels[0].angle * Math.PI / 180;
-    controls.target.set(INITIAL_VIEW_TARGET.x, INITIAL_VIEW_TARGET.y, INITIAL_VIEW_TARGET.z);
-    controls.update();
-    console.log('已切换到全览视角');
+    const level = viewLevels[0];
+    viewConfig.targetHeight = level.height;
+    viewConfig.targetAngle = level.angle * Math.PI / 180;
 }
 
 // ================== 6. 瓦片管理系统 ==================
@@ -607,6 +707,8 @@ const tileManager = {
     },
     
     update() {
+        // if (viewConfig.isMacro) return;
+        
         const grid = this.getCameraGrid();
         
         if (grid.x === this.currentGrid.x && grid.y === this.currentGrid.y) return;
@@ -615,8 +717,12 @@ const tileManager = {
         this.currentGrid = { ...grid };
         
         const neededTiles = new Set();
-        for (let dx = -CONFIG.VISIBLE_RADIUS; dx <= CONFIG.VISIBLE_RADIUS; dx++) {
-            for (let dy = -CONFIG.VISIBLE_RADIUS; dy <= CONFIG.VISIBLE_RADIUS; dy++) {
+        // 在宏观模式下，增加瓦片加载范围以覆盖聚光灯区域
+        const visibleRadius = viewConfig.isMacro ? 4 : CONFIG.VISIBLE_RADIUS;
+        const unloadRadius = viewConfig.isMacro ? 5 : CONFIG.UNLOAD_RADIUS;
+
+        for (let dx = -visibleRadius; dx <= visibleRadius; dx++) {
+            for (let dy = -visibleRadius; dy <= visibleRadius; dy++) {
                 neededTiles.add(this.getKey(grid.x + dx, grid.y + dy));
             }
         }
@@ -625,7 +731,7 @@ const tileManager = {
             if (!neededTiles.has(key)) {
                 const [tx, ty] = key.split('_').map(Number);
                 const distance = Math.max(Math.abs(tx - grid.x), Math.abs(ty - grid.y));
-                if (distance > CONFIG.UNLOAD_RADIUS) {
+                if (distance > unloadRadius) {
                     this.unloadTile(key);
                 }
             }
@@ -637,6 +743,130 @@ const tileManager = {
                 this.loadTile(x, y);
             }
         }
+    }
+};
+
+// ================== 6.2 宏观视角点云管理 ==================
+const macroPointsManager = {
+    points: null,
+    isLoaded: false,
+    
+    getTexture() {
+        const canvas = document.createElement('canvas');
+        canvas.width = 32;
+        canvas.height = 32;
+        const context = canvas.getContext('2d');
+        const gradient = context.createRadialGradient(16, 16, 0, 16, 16, 16);
+        gradient.addColorStop(0, 'rgba(255,255,255,1)');
+        gradient.addColorStop(0.2, 'rgba(255,255,255,0.8)');
+        gradient.addColorStop(0.5, 'rgba(255,255,255,0.2)');
+        gradient.addColorStop(1, 'rgba(0,0,0,0)');
+        context.fillStyle = gradient;
+        context.fillRect(0, 0, 32, 32);
+        const texture = new THREE.CanvasTexture(canvas);
+        texture.colorSpace = THREE.SRGBColorSpace;
+        return texture;
+    },
+
+    async load() {
+        if (this.isLoaded) return;
+        try {
+            console.log('正在加载宏观点云数据...');
+            const response = await fetch('/data/macro_points.json');
+            if(!response.ok) throw new Error("无法加载 macro_points.json");
+            const data = await response.json();
+            
+            const positions = [];
+            const colors = [];
+            const colorObj = new THREE.Color();
+            
+            // data format: [x, y, c, x, y, c...]
+            for (let i = 0; i < data.length; i += 3) {
+                const x = data[i];
+                const y = data[i+1];
+                const c = data[i+2];
+                
+                // 坐标变换：GIS(x, y) -> 3D(x, 0, -y)
+                // 高度设为 10 米，略高于地板
+                positions.push(x, 10, -y);
+                
+                const hex = tileManager.getColorByType(c);
+                colorObj.setHex(hex);
+                // 稍微提亮一点颜色
+                colorObj.multiplyScalar(1.5);
+                colors.push(colorObj.r, colorObj.g, colorObj.b);
+            }
+            
+            const geometry = new THREE.BufferGeometry();
+            geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+            geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+            
+            const material = new THREE.PointsMaterial({
+                size: 40, // 点大小
+                vertexColors: true,
+                map: this.getTexture(),
+                transparent: true,
+                opacity: 0.9,
+                depthWrite: false, // 禁用深度写入以支持叠加混合
+                blending: THREE.AdditiveBlending // 发光叠加效果
+            });
+            
+            this.points = new THREE.Points(geometry, material);
+            this.points.visible = false;
+            // 确保渲染顺序在半透明物体之后 (though blending handles it usually)
+            this.points.renderOrder = 999; 
+            scene.add(this.points);
+            this.isLoaded = true;
+            console.log(`宏观点云加载完成，共 ${data.length / 3} 个点`);
+            
+        } catch (e) {
+            console.error('宏观点云加载失败:', e);
+        }
+    },
+    
+    show() {
+        if (this.points) this.points.visible = true;
+        
+        let visibleCount = 0;
+        
+        // 我们不再隐藏任何建筑或路网
+        // 而是依赖 TileManager 让它们保留在场景中
+        // 同时依赖 灯光 (SpotLight) 去照亮中间，周围因为 ambientLight=0.1 而变暗
+        
+        tileManager.loadedTiles.forEach((tile) => {
+            if (tile.group) {
+                // 确保Group可见
+                tile.group.visible = true;
+                
+                // 确保所有子元素可见 (取消之前的隐藏逻辑)
+                tile.group.children.forEach((child) => {
+                    child.visible = true;
+                    visibleCount++;
+                });
+            }
+        });
+        
+        console.log(`宏观模式: 激活点云，保持 ${visibleCount} 个建筑/道路网格可见 (即使在阴影中)`);
+
+        // 仅隐藏地图底图(卫星图/街道图)
+        mapManager.group.visible = false;
+    },
+    
+    hide() {
+        if (this.points) this.points.visible = false;
+        
+        // 恢复详细瓦片显示 (其实不需要做太多，因为我们show的时候没隐藏)
+        tileManager.loadedTiles.forEach((tile) => {
+            if (tile.group) {
+                tile.group.visible = true;
+                tile.group.children.forEach((child) => {
+                    child.visible = true;
+                });
+            }
+        });
+        
+        // 恢复地图底图
+        mapManager.group.visible = true;
     }
 };
 
@@ -881,24 +1111,6 @@ infoDiv.style.cssText = `
 `;
 document.body.appendChild(infoDiv);
 
-const overviewButton = document.createElement('button');
-overviewButton.textContent = '全览';
-overviewButton.style.cssText = `
-    position: fixed;
-    top: 10px;
-    right: 10px;
-    background: rgba(20,20,20,0.8);
-    color: #fff;
-    border: 1px solid rgba(255,255,255,0.2);
-    padding: 8px 14px;
-    font-size: 12px;
-    border-radius: 6px;
-    cursor: pointer;
-    z-index: 1001;
-`;
-overviewButton.addEventListener('click', zoomToOverview);
-document.body.appendChild(overviewButton);
-
 function updateInfo() {
     const grid = tileManager.getCameraGrid();
     const loadedCount = Array.from(tileManager.loadedTiles.values())
@@ -908,7 +1120,7 @@ function updateInfo() {
     infoDiv.innerHTML = `
         🏙️ 城市漫游系统<br>
         ────────────────<br>
-        视角档位: ${viewConfig.currentLevel + 1}/6<br>
+        视角档位: ${viewConfig.currentLevel + 1}/7<br>
         高度: ${Math.round(viewConfig.currentHeight)}m<br>
         俯仰角: ${Math.round(viewConfig.currentPolarAngle * 180 / Math.PI)}°<br>
         ────────────────<br>
@@ -926,6 +1138,12 @@ function animate() {
     requestAnimationFrame(animate);
     
     controls.update();
+    // 更新聚光灯位置跟随相机
+    if (viewConfig.isMacro) {
+        spotLight.position.copy(camera.position);
+        spotLight.target.position.copy(controls.target);
+        spotLight.target.updateMatrixWorld();
+    }
     updateCameraView();  // 平滑相机过渡
     tileManager.update();
     mapManager.update(controls.target); // 地理底图更新
