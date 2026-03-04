@@ -36,7 +36,7 @@ scene.add(hemisphereLight);
 
 // 主光源 - 模拟太阳
 // 暖色调太阳光 (0xffefe0)，位置调整为侧射光以拉长阴影，增强立体感
-const dirLight = new THREE.DirectionalLight(0xffefe0, 1.2);
+const dirLight = new THREE.DirectionalLight(0xffefe0, 1.8);
 
 // 设置光源目标点为初始视图中心，确保阴影覆盖初始区域
 const targetObject = new THREE.Object3D();
@@ -69,10 +69,10 @@ scene.add(dirLight);
 
 // 全览模式的聚光灯（实现圆形高亮）
 const spotLight = new THREE.SpotLight(0xffffff, 0); // 初始强度为0
-spotLight.angle = Math.PI / 8;
+spotLight.angle = Math.PI / 10; // 减小张角以减少显示的瓦片数量
 spotLight.penumbra = 0.3;
 spotLight.decay = 0; // 无衰减，保证均匀
-spotLight.distance = 10000;
+spotLight.distance = 10000; // 减小照射距离
 spotLight.castShadow = false;
 spotLight.position.set(0, 8000, 0);
 scene.add(spotLight);
@@ -268,15 +268,17 @@ function enterMacroMode() {
     dirLight.intensity = 0.1;
     // fillLight.intensity = 0; // fillLight removed
     if (spotLight) {
-        spotLight.intensity = 12.5; // 进一步提高亮度 (原 2.5 -> 15 -> 30)
+        spotLight.intensity = 10.5; // 进一步提高亮度 (原 2.5 -> 15 -> 30)
         spotLight.color.setHex(0xc5e6fc); // 更明显的暖黄色 (原纯白 -> c5e6fc -> ffe0a0)
         // 显著增加照射范围, 覆盖更多区域
-        spotLight.angle = Math.PI / 4; 
+        spotLight.angle = Math.PI / 3; 
     }
     
     // 目标高度设为更高 (9000m)
     // 确保视角为90度(或接近)以获得正交俯视感
-    viewConfig.targetHeight = 8000;
+
+    ////
+    viewConfig.targetHeight = 6500;    
     viewConfig.targetAngle = 90 * Math.PI / 180; 
     
     // 加载并显示点云
@@ -534,6 +536,10 @@ const tileManager = {
         });
         
         const mesh = new THREE.Mesh(geometry, material);
+        // 存储建筑属性供交互使用
+        mesh.userData.Height = height;
+        mesh.userData.dominant_c = colorCode;
+        
         mesh.castShadow = true;
         mesh.receiveShadow = true;
         return { mesh, targetHeight: height };
@@ -750,8 +756,8 @@ const tileManager = {
         
         const neededTiles = new Set();
         // 在宏观模式下，增加瓦片加载范围以覆盖聚光灯区域
-        const visibleRadius = viewConfig.isMacro ? 4 : CONFIG.VISIBLE_RADIUS;
-        const unloadRadius = viewConfig.isMacro ? 5 : CONFIG.UNLOAD_RADIUS;
+        const visibleRadius = viewConfig.isMacro ? 3 : CONFIG.VISIBLE_RADIUS;
+        const unloadRadius = viewConfig.isMacro ? 4 : CONFIG.UNLOAD_RADIUS;
 
         for (let dx = -visibleRadius; dx <= visibleRadius; dx++) {
             for (let dy = -visibleRadius; dy <= visibleRadius; dy++) {
@@ -1143,6 +1149,93 @@ infoDiv.style.cssText = `
     z-index: 1000;
 `;
 document.body.appendChild(infoDiv);
+
+// ================== 7.5 交互 Tooltip ==================
+const tooltip = document.createElement('div');
+Object.assign(tooltip.style, {
+    position: 'absolute',
+    background: 'rgba(0, 0, 0, 0.85)',
+    color: '#fff',
+    padding: '10px',
+    borderRadius: '4px',
+    fontSize: '12px',
+    pointerEvents: 'none',
+    display: 'none',
+    zIndex: '1001',
+    border: '1px solid rgba(255, 255, 255, 0.3)',
+    boxShadow: '0 4px 6px rgba(0,0,0,0.3)',
+    fontFamily: 'sans-serif'
+});
+document.body.appendChild(tooltip);
+
+const raycaster = new THREE.Raycaster();
+const mouse = new THREE.Vector2();
+let hoveredObject = null;
+const originalEmissive = new THREE.Color(0x000000); // 默认无自发光
+
+window.addEventListener('mousemove', (event) => {
+    // 归一化鼠标坐标
+    mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+    mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+
+    raycaster.setFromCamera(mouse, camera);
+    
+    // 射线检测
+    const intersects = raycaster.intersectObjects(scene.children, true);
+
+    // 查找第一个包含建筑数据的物体
+    const hit = intersects.find(i => i.object.userData && i.object.userData.Height !== undefined);
+
+    if (hit) {
+        const object = hit.object;
+        const { Height, dominant_c } = object.userData;
+        
+        // 将类型代码转换为名称
+        const categoryNames = {
+            1: '商业',
+            2: '住宅',
+            3: '公共服务',
+            4: '科技与工业',
+            5: '教育文化'
+        };
+        const categoryName = categoryNames[dominant_c] || '其他';
+        
+        // 更新 Tooltip 内容和位置
+        tooltip.style.display = 'block';
+        tooltip.style.left = (event.clientX + 15) + 'px';
+        tooltip.style.top = (event.clientY + 15) + 'px';
+        tooltip.innerHTML = `
+            <div style="font-weight:bold; border-bottom:1px solid #555; margin-bottom:5px; padding-bottom:3px">🏢 建筑详情</div>
+            <div>高度: <span style="color:#00ffff">${Height}</span> m</div>
+            <div>功能类别: <span style="color:#ffcc00">${categoryName}</span></div>
+        `;
+
+        // 处理高亮
+        if (hoveredObject !== object) {
+            // 恢复上一个物体
+            if (hoveredObject) {
+                if (hoveredObject.material && hoveredObject.material.emissive) {
+                    hoveredObject.material.emissive.set(0x000000);
+                }
+            }
+            
+            // 高亮当前物体
+            hoveredObject = object;
+            if (hoveredObject.material && hoveredObject.material.emissive) {
+                hoveredObject.material.emissive.set(0x444444); // 深灰色微光
+            }
+        }
+    } else {
+        // 未命中任何建筑，隐藏 Tooltip 并重置高亮
+        tooltip.style.display = 'none';
+        if (hoveredObject) {
+            if (hoveredObject.material && hoveredObject.material.emissive) {
+                hoveredObject.material.emissive.set(0x000000);
+            }
+            hoveredObject = null;
+        }
+    }
+});
 
 function updateInfo() {
     const grid = tileManager.getCameraGrid();
