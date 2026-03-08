@@ -1,5 +1,6 @@
-import * as THREE from 'three';
+﻿import * as THREE from 'three';
 import { MapControls } from 'three/examples/jsm/controls/MapControls.js';
+import { playIntro } from './intro.js';
 
 // ================== 1. 全局配置 ==================
 const CONFIG = {
@@ -10,6 +11,9 @@ const CONFIG = {
     BASE_URL: '/data/tiles', // 瓦片数据的路径
     ROADNET_URL: '/data/roadnet' // 路网数据的路径
 };
+
+// 动画状态标记
+let isIntroPlaying = true;
 
 // ================== 2. 场景初始化 ==================
 const scene = new THREE.Scene();
@@ -80,10 +84,13 @@ scene.add(spotLight.target);
 
 // ================== 4. 天空盒与地面 ==================
 const textureLoader = new THREE.TextureLoader();
+let skyboxTexture = null; // 存储天空盒纹理引用
+
 textureLoader.load('/skybox/DaySkyHDRI027B_4K_TONEMAPPED.jpg', (texture) => {
     texture.colorSpace = THREE.SRGBColorSpace;
     texture.mapping = THREE.EquirectangularReflectionMapping;
-    scene.background = texture;
+    skyboxTexture = texture;
+    // scene.background = texture; // 初始不设置，由Intro控制
     console.log('✓ 天空盒加载成功');
 });
 // 添加平面的地面
@@ -303,9 +310,15 @@ function exitMacroMode() {
     scene.fog = savedEnv.fog;
     
     // 延迟恢复背景颜色，避免闪烁
+    // 优先使用已加载的天空盒纹理，其次是保存的背景，最后才是纯色
     setTimeout(() => {
-         if(savedEnv.background) scene.background = savedEnv.background;
-         else scene.background = new THREE.Color(0x87ceeb);
+        if (typeof skyboxTexture !== 'undefined' && skyboxTexture) {
+            scene.background = skyboxTexture;
+        } else if (savedEnv.background) {
+            scene.background = savedEnv.background;
+        } else {
+            scene.background = new THREE.Color(0x87ceeb);
+        }
     }, 300);
 
     hemisphereLight.intensity = savedEnv.ambientIntensity;
@@ -1048,8 +1061,12 @@ const mapManager = {
         this.loadedTiles.set(key, { mesh: null, status: 'loading' });
         
         // 更换为 ArcGIS 深色数字底图（World Dark Gray Canvas），符合整体大屏深暗色风格
-        const url = `https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/${zoom}/${ty}/${tx}`;
+        //const url = `https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/${zoom}/${ty}/${tx}`;
         // (备用) ArcGIS 卫星影像底图: const url = `https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/${zoom}/${ty}/${tx}`;
+        
+        const subdomains = ['a', 'b', 'c', 'd'];
+        const s = subdomains[(tx + ty) % 4]; 
+        const url = `https://${s}.basemaps.cartocdn.com/dark_all/${zoom}/${tx}/${ty}.png`;
         
         mapTextureLoader.load(
             url,
@@ -1135,6 +1152,7 @@ const mapManager = {
 scene.add(mapManager.group);
 
 // ================== 7. UI 信息显示 ==================
+/*
 const infoDiv = document.createElement('div');
 infoDiv.style.cssText = `
     position: fixed;
@@ -1149,6 +1167,7 @@ infoDiv.style.cssText = `
     z-index: 1000;
 `;
 document.body.appendChild(infoDiv);
+*/
 
 // ================== 7.5 交互 Tooltip ==================
 const tooltip = document.createElement('div');
@@ -1237,6 +1256,7 @@ window.addEventListener('mousemove', (event) => {
     }
 });
 
+/*
 function updateInfo() {
     const grid = tileManager.getCameraGrid();
     const loadedCount = Array.from(tileManager.loadedTiles.values())
@@ -1258,36 +1278,71 @@ function updateInfo() {
         滚轮: 切换视角
     `;
 }
+*/
 
 // ================== 8. 动画循环 ==================
 function animate() {
     requestAnimationFrame(animate);
     
-    controls.update();
-    // 更新聚光灯位置跟随相机
+// === 光影联动 ===
+    // 独立出光照更新，确保不管是开场动画的宏观飞行还是常规微观操作，光源都能紧随相机
     if (viewConfig.isMacro) {
         spotLight.position.copy(camera.position);
         spotLight.target.position.copy(controls.target);
         spotLight.target.updateMatrixWorld();
-    } else {
+    } else if (!isIntroPlaying) {
         // 微观模式下，让太阳光跟随相机目标移动，保证阴影始终覆盖视野中心
-        // 保持光源相对于目标的偏移量不变
-        const sunOffset = { x: -1500, y: 2000, z: 1500 }; 
+        const sunOffset = { x: -1500, y: 2000, z: 1500 };
         dirLight.position.set(
-            controls.target.x + sunOffset.x, 
-            controls.target.y + sunOffset.y, 
+            controls.target.x + sunOffset.x,
+            controls.target.y + sunOffset.y,
             controls.target.z + sunOffset.z
         );
         dirLight.target.position.copy(controls.target);
         dirLight.target.updateMatrixWorld();
     }
-    updateCameraView();  // 平滑相机过渡
+
+    // 如果未播放开场动画，使用常规控制器更新视图
+    if (!isIntroPlaying) {
+        controls.update();
+        updateCameraView();  // 平滑相机过渡
+    }
+
     tileManager.update();
     mapManager.update(controls.target); // 地理底图更新
     tileManager.updateBuildingAnimations();  // 建筑生长动画
-    updateInfo();
+    //updateInfo();
     
     renderer.render(scene, camera);
+}
+
+// ================== 8.5 背景音乐 ==================
+const listener = new THREE.AudioListener();
+camera.add(listener);
+
+const backgroundSound = new THREE.Audio(listener);
+const audioLoader = new THREE.AudioLoader();
+audioLoader.load('/universfield-cosmic-exploration-387717.mp3', function(buffer) {
+    backgroundSound.setBuffer(buffer);
+    backgroundSound.setLoop(true); // 循环播放
+    backgroundSound.setVolume(0.1); // 设置音量
+});
+
+// 启动背景音乐（由开场动画的"点击进入"触发）
+function startBackgroundMusic() {
+    if (listener.context.state === 'suspended') {
+        listener.context.resume().then(() => {
+            if (backgroundSound.buffer && !backgroundSound.isPlaying) {
+                backgroundSound.play();
+                console.log('背景音乐开始播放（开场动画）');
+            }
+        });
+    } else if (listener.context.state === 'running') {
+        if (backgroundSound.buffer && !backgroundSound.isPlaying) {
+            backgroundSound.play();
+            console.log('背景音乐开始播放（开场动画）');
+        }
+    }
 }
 
 // ================== 9. 窗口自适应 ==================
@@ -1317,7 +1372,88 @@ for (let dx = -CONFIG.VISIBLE_RADIUS; dx <= CONFIG.VISIBLE_RADIUS; dx++) {
         tileManager.loadTile(tileX, tileY);
     }
 }
-
 mapManager.update(controls.target); // 初始化地理底图中心加载
+
+// 记录我们期望的最终正常游玩状态的相机位置和目标点
+// Level 0: Height 2500, Angle 80 (from Vertical).
+// 垂直看下为90度(或0度)，具体取决于定义。这里 angle 80 对应近乎垂直的俯瞰。
+// 为了与 updateCameraView 中的逻辑一致: horizontalDist = H * tan(PI/2 - polarAngle)
+// polarAngle = 80 deg (1.396 rad). PI/2 - 1.396 = 0.174 rad (10 deg).
+// tan(10) ≈ 0.176.
+// horizontalDist = 2500 * 0.176 ≈ 440.
+// 方向：朝南(+Z)。因为我们假设 North 是 -Z.
+const finalTargetPos = { x: 250, y: 0, z: -10750 };
+// 修正 finalCameraPos，使其精确匹配 Level 0 的状态 (从垂直俯视偏离约10度)
+const finalCameraPos = { 
+    x: finalTargetPos.x, 
+    y: 2500, 
+    z: finalTargetPos.z + 440 
+}; 
+
+// ================== 【新增：触发开场动画】 ==================
+
+// 进入宏观模式（内部会触发点云加载和显示）
+// 注意：viewConfig.isMacro 必须为 false（默认值），
+// 否则 enterMacroMode() 的守卫 if (viewConfig.isMacro) return 会直接退出
+enterMacroMode();
+
+// 用于收集和管理淡入材质的变量
+let materialsCollected = false;
+let microMaterialRefs = []; // 保留变量声明，不再使用
+
+playIntro(
+    camera, 
+    controls, 
+    finalCameraPos, 
+    finalTargetPos, 
+    () => {
+        // onComplete：遮罩已淡出，交还控制权
+        console.log(' 开场动画结束，控制权已交还');
+        isIntroPlaying = false;
+    },
+    () => {
+        // onTransition：全屏变黑瞬间调用，切换宏观微观
+        console.log(' 切黑瞬间：切换宏观微观');
+
+        // 1. 退出宏观模式（隐藏点云、关聚光灯、恢复雾气等）
+        exitMacroMode();
+
+        // 2. 强制将所有建筑/路网材质恢复为完全不透明（彻底解决 Z-fighting）
+        tileManager.loadedTiles.forEach(tile => {
+            if (tile.group) {
+                tile.group.traverse(obj => {
+                    if (obj.isMesh && obj.material) {
+                        const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+                        mats.forEach(m => {
+                            m.transparent = false;
+                            m.opacity = 1;
+                            m.depthWrite = true;
+                            m.needsUpdate = true;
+                        });
+                    }
+                });
+            }
+        });
+
+        // 3. 在全黑瞬间恢复天空盒（用户无法察觉切换）
+        if (typeof skyboxTexture !== 'undefined' && skyboxTexture) {
+            scene.background = skyboxTexture;
+        }
+
+        // 4. 同步 viewConfig 到微观 Level 0 状态
+        viewConfig.currentHeight = finalCameraPos.y;
+        viewConfig.currentPolarAngle = viewLevels[0].angle * Math.PI / 180;
+        viewConfig.targetHeight = finalCameraPos.y;
+        viewConfig.targetAngle = viewLevels[0].angle * Math.PI / 180;
+        viewConfig.transitionSpeed = 0.08;
+        viewConfig.isMacro = false;
+    },
+    null, // onTextStart
+    () => {
+        // onEnter：用户点击"进入系统"后立即调用，启动背景音乐
+        startBackgroundMusic();
+    }
+);
+
 
 animate();
