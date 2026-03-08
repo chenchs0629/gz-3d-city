@@ -52,7 +52,7 @@ export function playIntro(camera, controls, finalPosition, finalTarget, onComple
     const subtitle = document.createElement('div');
     subtitle.innerHTML = 'Exploring the Invisible Structure of Urban Building Functions.';
     subtitle.style.cssText = `
-        color: #aaaaaa; font-size: 3rem; letter-spacing: 0.2em; margin-top: 20px;
+        color: #aaaaaa; font-size: 2.5rem; letter-spacing: 0.2em; margin-top: 20px;
         font-family: "Noto Sans SC", "Microsoft YaHei", sans-serif;
         opacity: 0; transform: translateY(20px);
     `;
